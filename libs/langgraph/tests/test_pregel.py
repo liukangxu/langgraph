@@ -14217,3 +14217,35 @@ def test_runnable_passthrough_node_graph() -> None:
     graph = graph_builder.compile()
 
     assert graph.get_graph(xray=True).to_json() == graph.get_graph(xray=False).to_json()
+
+
+@pytest.mark.parametrize("checkpointer_name", ALL_CHECKPOINTERS_SYNC)
+def test_interrupt_subgraph(request: pytest.FixtureRequest, checkpointer_name: str):
+    checkpointer = request.getfixturevalue(f"checkpointer_{checkpointer_name}")
+
+    class State(TypedDict):
+        baz: str
+
+    def foo(state):
+        return {"baz": "foo"}
+
+    def bar(state):
+        value = interrupt("Please provide baz value:")
+        return {"baz": value}
+
+    child_builder = StateGraph(State)
+    child_builder.add_node(bar)
+    child_builder.add_edge(START, "bar")
+
+    builder = StateGraph(State)
+    builder.add_node(foo)
+    builder.add_node("bar", child_builder.compile())
+    builder.add_edge(START, "foo")
+    builder.add_edge("foo", "bar")
+    graph = builder.compile(checkpointer=checkpointer)
+
+    thread1 = {"configurable": {"thread_id": "1"}}
+    # First run, interrupted at bar
+    assert graph.invoke({"baz": ""}, thread1)
+    # Resume with answer
+    assert graph.invoke(Command(resume="bar"), thread1)
